@@ -15,26 +15,14 @@
     <section class="song-bar">
       <button id="load-btn">Load Random Song</button>
       <span id="song-name">No song loaded</span>
-      <span id="bpm-display">-- BPM</span>
+      <!-- Double-click this to edit beatgrid BPM -->
+      <span id="bpm-display" title="Double-click to edit beatgrid BPM">-- BPM</span>
       <span id="loading" class="hidden">Loading...</span>
     </section>
 
     <section class="target-bpm-bar">
       <label for="target-bpm">Target BPM:</label>
       <input type="number" id="target-bpm" min="60" max="200" value="120">
-    </section>
-
-    <!-- NEW: Beatgrid BPM override -->
-    <section class="target-bpm-bar">
-      <label for="grid-bpm">Beatgrid BPM:</label>
-      <input
-        type="number"
-        id="grid-bpm"
-        min="30"
-        max="300"
-        value="120"
-      >
-      <span style="opacity:.8;">(overrides grid only)</span>
     </section>
 
     <!-- Beatgrid offset (ms) -->
