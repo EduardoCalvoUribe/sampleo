@@ -24,6 +24,33 @@
       <input type="number" id="target-bpm" min="60" max="200" value="120">
     </section>
 
+    <!-- NEW: Beatgrid BPM override -->
+    <section class="target-bpm-bar">
+      <label for="grid-bpm">Beatgrid BPM:</label>
+      <input
+        type="number"
+        id="grid-bpm"
+        min="30"
+        max="300"
+        value="120"
+      >
+      <span style="opacity:.8;">(overrides grid only)</span>
+    </section>
+
+    <!-- Beatgrid offset (ms) -->
+    <section class="target-bpm-bar">
+      <label for="offset-slider">Beatgrid Offset (ms):</label>
+      <input
+        type="range"
+        id="offset-slider"
+        min="-500"
+        max="500"
+        step="1"
+        value="0"
+      >
+      <span id="offset-value">0 ms</span>
+    </section>
+
     <section class="pad-grid" id="pad-grid"></section>
 
     <section class="chunk-detail hidden" id="chunk-detail">

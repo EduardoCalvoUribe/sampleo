@@ -2,14 +2,21 @@
 const STATE = {
   audioContext: null,
   originalBuffer: null,
-  detectedBPM: 0,
-  targetBPM: 120,
-  beatDuration: 0,       // seconds per beat at detected BPM
-  firstBeatTime: 0,      // seconds offset to first beat (phase)
+
+  detectedBPM: 0,          // analyzed BPM (for info + playbackRate baseline)
+  gridBPM: 0,              // NEW: bpm used for beatgrid (overridable). 0 => fallback to detected
+  targetBPM: 120,          // playback target BPM (time-stretch)
+
+  beatDuration: 0,         // seconds per beat at GRID bpm
+  firstBeatTime: 0,        // seconds offset to first beat (phase) (auto-detected)
   totalBeats: 0,
-  chunks: [],            // 16 objects: {beatIndex, lengthInBeats}
+
+  chunks: [],              // 16 objects: {beatIndex, lengthInBeats}
   selectedChunkIndex: 0,
-  activeSources: new Map() // chunkIndex -> AudioBufferSourceNode
+  activeSources: new Map(), // chunkIndex -> AudioBufferSourceNode
+
+  // global beatgrid offset (ms)
+  gridOffsetMs: 0
 };
 
 const KEYS_ROW1 = ['Q','W','E','R','T','Y','U','I'];
@@ -23,7 +30,12 @@ const loadBtn          = document.getElementById('load-btn');
 const songName         = document.getElementById('song-name');
 const bpmDisplay       = document.getElementById('bpm-display');
 const loadingEl        = document.getElementById('loading');
+
 const targetBpmInput   = document.getElementById('target-bpm');
+
+// NEW: beatgrid BPM override input
+const gridBpmInput     = document.getElementById('grid-bpm');
+
 const padGrid          = document.getElementById('pad-grid');
 const chunkDetail      = document.getElementById('chunk-detail');
 const chunkLabel       = document.getElementById('chunk-label');
@@ -35,6 +47,10 @@ const waveformCanvas   = document.getElementById('waveform');
 const downloadChunkBtn = document.getElementById('download-chunk-btn');
 const downloadAllBtn   = document.getElementById('download-all-btn');
 const rerandomizeBtn   = document.getElementById('rerandomize-btn');
+
+// beatgrid offset UI
+const offsetSlider     = document.getElementById('offset-slider');
+const offsetValue      = document.getElementById('offset-value');
 
 // ── Build pad grid ──────────────────────────────────────────────────
 const padEls = [];
@@ -52,6 +68,9 @@ for (let i = 0; i < 16; i++) {
 document.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.target === targetBpmInput) return;
+  if (e.target === gridBpmInput) return;
+  if (e.target === offsetSlider) return;
+
   const idx = KEY_MAP[e.key.toUpperCase()];
   if (idx !== undefined && STATE.originalBuffer) {
     e.preventDefault();
@@ -61,9 +80,28 @@ document.addEventListener('keydown', (e) => {
 
 // ── Events ──────────────────────────────────────────────────────────
 loadBtn.addEventListener('click', loadRandomSong);
+
 targetBpmInput.addEventListener('change', () => {
-  STATE.targetBPM = parseFloat(targetBpmInput.value) || STATE.detectedBPM;
+  STATE.targetBPM = parseFloat(targetBpmInput.value) || STATE.detectedBPM || 120;
 });
+
+// NEW: grid bpm override
+if (gridBpmInput) {
+  gridBpmInput.addEventListener('change', () => {
+    const val = parseFloat(gridBpmInput.value);
+    // If invalid/empty -> fallback to detected BPM
+    STATE.gridBPM = Number.isFinite(val) && val > 0 ? val : 0;
+
+    updateBeatDurationFromGrid();
+    recomputeTotalBeats();
+    clampChunksToTotalBeats();
+
+    if (STATE.originalBuffer) {
+      selectChunk(STATE.selectedChunkIndex);
+    }
+  });
+}
+
 lengthSlider.addEventListener('input', () => {
   const c = STATE.chunks[STATE.selectedChunkIndex];
   if (!c) return;
@@ -71,9 +109,28 @@ lengthSlider.addEventListener('input', () => {
   lengthValue.textContent = c.lengthInBeats;
   drawWaveform();
 });
+
 downloadChunkBtn.addEventListener('click', () => downloadChunk(STATE.selectedChunkIndex));
 downloadAllBtn.addEventListener('click', downloadAllChunks);
 rerandomizeBtn.addEventListener('click', rerandomize);
+
+// beatgrid offset slider (ms)
+if (offsetSlider) {
+  STATE.gridOffsetMs = parseInt(offsetSlider.value, 10) || 0;
+  if (offsetValue) offsetValue.textContent = `${STATE.gridOffsetMs} ms`;
+
+  offsetSlider.addEventListener('input', () => {
+    STATE.gridOffsetMs = parseInt(offsetSlider.value, 10) || 0;
+    if (offsetValue) offsetValue.textContent = `${STATE.gridOffsetMs} ms`;
+
+    recomputeTotalBeats();
+    clampChunksToTotalBeats();
+
+    if (STATE.originalBuffer) {
+      selectChunk(STATE.selectedChunkIndex);
+    }
+  });
+}
 
 // ── Song loading ────────────────────────────────────────────────────
 async function loadRandomSong() {
@@ -99,14 +156,20 @@ async function loadRandomSong() {
     const bpmResult = await fetchBPM(file, STATE.originalBuffer);
     STATE.detectedBPM = bpmResult.bpm;
     STATE.firstBeatTime = bpmResult.firstBeatTime;
-    bpmDisplay.textContent = STATE.detectedBPM + ' BPM';
+
+    // Show analyzed BPM, but keep grid bpm separate
+    bpmDisplay.textContent = `${STATE.detectedBPM} BPM (analyzed)`;
+
+    // Defaults:
     STATE.targetBPM = STATE.detectedBPM;
     targetBpmInput.value = STATE.detectedBPM;
 
-    STATE.beatDuration = 60 / STATE.detectedBPM;
-    STATE.totalBeats = Math.floor(
-      (STATE.originalBuffer.duration - STATE.firstBeatTime) / STATE.beatDuration
-    );
+    // Default grid BPM to analyzed BPM (user can override)
+    STATE.gridBPM = STATE.detectedBPM;
+    if (gridBpmInput) gridBpmInput.value = STATE.gridBPM;
+
+    updateBeatDurationFromGrid();
+    recomputeTotalBeats();
 
     initChunks();
     selectChunk(0);
@@ -122,6 +185,54 @@ async function loadRandomSong() {
 function ensureAudioContext() {
   if (!STATE.audioContext) {
     STATE.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+// ── Beatgrid helpers ────────────────────────────────────────────────
+function getGridBPM() {
+  // If user cleared/invalid, fallback to detected
+  return (STATE.gridBPM && STATE.gridBPM > 0) ? STATE.gridBPM : (STATE.detectedBPM || 120);
+}
+
+function updateBeatDurationFromGrid() {
+  const bpm = getGridBPM();
+  STATE.beatDuration = 60 / bpm;
+}
+
+// effective first beat after applying ms offset
+function getEffectiveFirstBeatTime() {
+  // positive offset => move grid forward in time (later)
+  // negative offset => move grid backward in time (earlier)
+  return STATE.firstBeatTime + (STATE.gridOffsetMs / 1000);
+}
+
+function recomputeTotalBeats() {
+  if (!STATE.originalBuffer) {
+    STATE.totalBeats = 0;
+    return;
+  }
+  if (!STATE.beatDuration || !Number.isFinite(STATE.beatDuration)) {
+    STATE.totalBeats = 0;
+    return;
+  }
+
+  const effFirst = getEffectiveFirstBeatTime();
+  const dur = STATE.originalBuffer.duration;
+
+  if (effFirst >= dur) {
+    STATE.totalBeats = 0;
+    return;
+  }
+
+  const start = Math.max(0, effFirst);
+  STATE.totalBeats = Math.floor((dur - start) / STATE.beatDuration);
+}
+
+function clampChunksToTotalBeats() {
+  const maxStart = Math.max(0, STATE.totalBeats - 1);
+  for (const c of STATE.chunks) {
+    if (c.beatIndex > maxStart) c.beatIndex = maxStart;
+    if (c.beatIndex < 0) c.beatIndex = 0;
   }
 }
 
@@ -143,7 +254,6 @@ async function fetchBPM(filename, audioBuffer) {
 // ── BPM detection (client-side fallback) ────────────────────────────
 async function detectBPM(buffer) {
   const sampleRate = buffer.sampleRate;
-  const duration = buffer.duration;
   const len = buffer.length;
 
   // Create offline context, render through low-pass filter
@@ -199,25 +309,21 @@ async function detectBPM(buffer) {
   for (const [bpm, count] of Object.entries(intervalCounts)) {
     if (count > bestCount) {
       bestCount = count;
-      bestBPM = parseInt(bpm);
+      bestBPM = parseInt(bpm, 10);
     }
   }
 
-  // Find the first beat offset (phase alignment)
-  // Test which phase offset best aligns with the detected peaks
+  // Find first beat offset (phase alignment)
   const beatSamples = Math.floor((60 / bestBPM) * sampleRate);
-  let bestOffset = peaks[0]; // default: first peak
+  let bestOffset = peaks[0];
   let bestScore = -1;
 
-  // Test each early peak as a candidate first-beat position
   const candidateCount = Math.min(peaks.length, 10);
   for (let c = 0; c < candidateCount; c++) {
-    const offset = peaks[c] % beatSamples; // phase within one beat period
+    const offset = peaks[c] % beatSamples;
     let score = 0;
-    // Score: how many peaks fall close to a beat grid line with this offset
     for (let i = 0; i < peaks.length; i++) {
       const distFromGrid = (peaks[i] - offset) % beatSamples;
-      // Allow 15% tolerance of a beat period
       const tolerance = beatSamples * 0.15;
       if (distFromGrid < tolerance || distFromGrid > beatSamples - tolerance) {
         score++;
@@ -229,12 +335,11 @@ async function detectBPM(buffer) {
     }
   }
 
-  const firstBeatTime = bestOffset / sampleRate;
-  return { bpm: bestBPM, firstBeatTime };
+  return { bpm: bestBPM, firstBeatTime: bestOffset / sampleRate };
 }
 
 function findPeaks(data, threshold, sampleRate) {
-  const minDist = Math.floor(sampleRate * 0.1); // 100ms minimum between peaks
+  const minDist = Math.floor(sampleRate * 0.1);
   const peaks = [];
   let lastPeak = -minDist;
   for (let i = 0; i < data.length; i++) {
@@ -262,6 +367,7 @@ function arrayMax(arr) {
 
 // ── Chunk management ────────────────────────────────────────────────
 function initChunks() {
+  recomputeTotalBeats();
   STATE.chunks = [];
   for (let i = 0; i < 16; i++) {
     STATE.chunks.push({
@@ -277,14 +383,24 @@ function rerandomize() {
   selectChunk(STATE.selectedChunkIndex);
 }
 
+// ── Beatgrid-sliced buffer (uses GRID bpm + detected firstBeatTime) ──
 function getChunkBuffer(index) {
   const c = STATE.chunks[index];
   const buf = STATE.originalBuffer;
   const sampleRate = buf.sampleRate;
+
+  // beat length uses GRID bpm
   const beatSamples = Math.floor(STATE.beatDuration * sampleRate);
-  const offsetSamples = Math.floor(STATE.firstBeatTime * sampleRate);
-  const startSample = offsetSamples + c.beatIndex * beatSamples;
+
+  // start phase uses detected firstBeatTime + ms offset
+  const effectiveFirstBeatTime = getEffectiveFirstBeatTime();
+  const offsetSamples = Math.floor(effectiveFirstBeatTime * sampleRate);
+
+  const startSampleRaw = offsetSamples + c.beatIndex * beatSamples;
   const lengthSamples = c.lengthInBeats * beatSamples;
+
+  // clamp to avoid negative indexing
+  const startSample = Math.max(0, startSampleRaw);
   const endSample = Math.min(startSample + lengthSamples, buf.length);
   const actualLen = endSample - startSample;
 
@@ -319,7 +435,11 @@ function triggerPad(index) {
 
   const source = STATE.audioContext.createBufferSource();
   source.buffer = chunkBuf;
-  source.playbackRate.value = STATE.targetBPM / STATE.detectedBPM;
+
+  // NOTE: playbackRate still uses analyzed BPM as the "true tempo" reference.
+  // Beatgrid BPM only affects slicing/beat math.
+  source.playbackRate.value = STATE.targetBPM / (STATE.detectedBPM || 120);
+
   source.connect(STATE.audioContext.destination);
 
   STATE.activeSources.set(index, source);
@@ -344,7 +464,10 @@ function selectChunk(index) {
   const c = STATE.chunks[index];
   chunkLabel.textContent = 'Chunk ' + (index + 1);
   chunkKey.textContent = 'Key: ' + allKeys[index];
-  chunkStart.textContent = 'Beat: ' + c.beatIndex;
+
+  const gridBpm = getGridBPM();
+  chunkStart.textContent = `Beat: ${c.beatIndex} (Grid: ${gridBpm} BPM, Offset: ${STATE.gridOffsetMs}ms)`;
+
   lengthSlider.value = c.lengthInBeats;
   lengthValue.textContent = c.lengthInBeats;
   drawWaveform();
@@ -406,19 +529,18 @@ function encodeWAV(audioBuffer) {
 
   // fmt chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);            // chunk size
-  view.setUint16(20, 1, true);             // PCM format
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
   view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true);            // bits per sample
+  view.setUint16(34, 16, true);
 
   // data chunk
   writeString(view, 36, 'data');
   view.setUint32(40, dataSize, true);
 
-  // Interleave channel data
   const channels = [];
   for (let ch = 0; ch < numChannels; ch++) {
     channels.push(audioBuffer.getChannelData(ch));
