@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAMPEL</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SAMPEL</h1>
+    </header>
+
+    <section class="song-bar">
+      <button id="load-btn">Load Random Song</button>
+      <span id="song-name">No song loaded</span>
+      <span id="bpm-display">-- BPM</span>
+      <span id="loading" class="hidden">Loading...</span>
+    </section>
+
+    <section class="target-bpm-bar">
+      <label for="target-bpm">Target BPM:</label>
+      <input type="number" id="target-bpm" min="60" max="200" value="120">
+    </section>
+
+    <section class="pad-grid" id="pad-grid"></section>
+
+    <section class="chunk-detail hidden" id="chunk-detail">
+      <div class="detail-header">
+        <span id="chunk-label">Chunk 1</span>
+        <span id="chunk-key">Key: Q</span>
+        <span id="chunk-start">Beat: 0</span>
+      </div>
+      <div class="detail-controls">
+        <label for="length-slider">Length (beats):</label>
+        <input type="range" id="length-slider" min="1" max="16" value="1">
+        <span id="length-value">1</span>
+      </div>
+      <canvas id="waveform" width="760" height="100"></canvas>
+      <button id="download-chunk-btn">Download This Chunk</button>
+    </section>
+
+    <section class="action-bar">
+      <button id="download-all-btn">Download All</button>
+      <button id="rerandomize-btn">Re-randomize Chunks</button>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

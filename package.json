@@ -1,0 +1,12 @@
+{
+  "name": "sampel",
+  "version": "1.0.0",
+  "description": "Beat sampling web app for chopping disco/funk/soul records",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

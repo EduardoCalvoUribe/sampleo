@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:joesul.li)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:jmperezperez.com)",
+      "WebFetch(domain:aleen42.github.io)",
+      "WebFetch(domain:wiki.aleen42.com)",
+      "Bash(npm install)",
+      "Bash(py:*)",
+      "Bash(C:UserseducaProgrammingPersonal_ProjectssampelvenvScriptspython.exe --version)",
+      "Bash(cmd /c:*)"
+    ]
+  }
+}
