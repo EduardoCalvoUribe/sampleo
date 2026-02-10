@@ -3,12 +3,15 @@ const STATE = {
   audioContext: null,
   originalBuffer: null,
 
+  currentSong: null,       // filename
+
   detectedBPM: 0,          // analyzed BPM (info)
+  firstBeatTime: 0,        // auto-detected phase start (seconds)
+
   gridBPM: 0,              // beatgrid BPM override; 0 => use detectedBPM
   targetBPM: 120,          // playback target BPM (user control)
 
   beatDuration: 0,         // seconds per beat at GRID bpm
-  firstBeatTime: 0,        // auto-detected phase start (seconds)
   totalBeats: 0,           // WHOLE beats available from effective first beat to end
 
   chunks: [],              // 16 objects: {beatIndex, lengthInBeats} beatIndex is integer beats
@@ -30,7 +33,7 @@ const STATE = {
     lookahead: 0.12,    // seconds scheduled ahead
     intervalMs: 25,
     gainNode: null,
-    volume: 0.35        // default metronome volume
+    volume: 0.35
   },
 
   // Quantization division for keypress triggers:
@@ -45,6 +48,32 @@ const STATE = {
     uiTimeoutId: null
   }
 };
+
+const STORAGE_PREFIX = 'SAMPLEO_songSettings::';
+
+function getSongKey(filename) {
+  return STORAGE_PREFIX + filename;
+}
+
+function loadSongSettings(filename) {
+  try {
+    const raw = localStorage.getItem(getSongKey(filename));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveSongSettings(patch) {
+  if (!STATE.currentSong) return;
+  const key = getSongKey(STATE.currentSong);
+  const existing = loadSongSettings(STATE.currentSong) || {};
+  const next = { ...existing, ...patch };
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch (_) {}
+}
 
 const KEYS_ROW1 = ['Q','W','E','R','T','Y','U','I'];
 const KEYS_ROW2 = ['A','S','D','F','G','H','J','K'];
@@ -64,7 +93,7 @@ const loadingEl        = document.getElementById('loading');
 const targetBpmInput   = document.getElementById('target-bpm');
 
 // Metronome / quant controls
-const metroVolSlider   = document.getElementById('metro-vol');     // NEW
+const metroVolSlider   = document.getElementById('metro-vol');
 const metroToggleBtn   = document.getElementById('metro-toggle');
 const quantBeatBtn     = document.getElementById('quant-beat');
 const quantHalfBtn     = document.getElementById('quant-half');
@@ -117,8 +146,10 @@ loadBtn.addEventListener('click', loadRandomSong);
 
 targetBpmInput.addEventListener('change', () => {
   STATE.targetBPM = parseFloat(targetBpmInput.value) || getPlaybackBaseBPM();
+  saveSongSettings({ targetBPM: STATE.targetBPM });
 });
 
+// Quantized length slider
 configureLengthSlider();
 lengthSlider.addEventListener('input', () => {
   const c = STATE.chunks[STATE.selectedChunkIndex];
@@ -143,6 +174,8 @@ if (offsetSlider) {
   offsetSlider.addEventListener('input', () => {
     STATE.gridOffsetMs = parseInt(offsetSlider.value, 10) || 0;
     if (offsetValue) offsetValue.textContent = `${STATE.gridOffsetMs} ms`;
+
+    saveSongSettings({ offsetMs: STATE.gridOffsetMs });
 
     recomputeTotalBeats();
     clampChunksToTotalBeats();
@@ -205,22 +238,54 @@ async function loadRandomSong() {
     }
 
     const file = songs[Math.floor(Math.random() * songs.length)];
+    STATE.currentSong = file;
     songName.textContent = file;
 
+    // restore per-song settings first (grid BPM override + offset + target BPM)
+    const cached = loadSongSettings(file);
+    if (cached) {
+      if (typeof cached.gridBPM === 'number') STATE.gridBPM = cached.gridBPM;
+      if (typeof cached.offsetMs === 'number') STATE.gridOffsetMs = cached.offsetMs;
+      if (typeof cached.targetBPM === 'number') STATE.targetBPM = cached.targetBPM;
+
+      // update UI immediately
+      if (offsetSlider) offsetSlider.value = String(STATE.gridOffsetMs);
+      if (offsetValue) offsetValue.textContent = `${STATE.gridOffsetMs} ms`;
+      targetBpmInput.value = STATE.targetBPM;
+    } else {
+      STATE.gridBPM = 0;
+      STATE.gridOffsetMs = 0;
+      if (offsetSlider) offsetSlider.value = '0';
+      if (offsetValue) offsetValue.textContent = `0 ms`;
+    }
+
+    // load audio
     const audioRes = await fetch('/songs/' + encodeURIComponent(file));
     const arrayBuf = await audioRes.arrayBuffer();
     STATE.originalBuffer = await STATE.audioContext.decodeAudioData(arrayBuf);
 
-    const bpmResult = await fetchBPM(file, STATE.originalBuffer);
-    STATE.detectedBPM = bpmResult.bpm;
-    STATE.firstBeatTime = bpmResult.firstBeatTime;
+    // use cached analysis if present
+    if (cached && typeof cached.analyzedBPM === 'number' && typeof cached.firstBeatTime === 'number') {
+      STATE.detectedBPM = cached.analyzedBPM;
+      STATE.firstBeatTime = cached.firstBeatTime;
+    } else {
+      const bpmResult = await fetchBPM(file, STATE.originalBuffer);
+      STATE.detectedBPM = bpmResult.bpm;
+      STATE.firstBeatTime = bpmResult.firstBeatTime;
 
-    // default: grid uses analyzed
-    STATE.gridBPM = 0;
+      // cache analysis result
+      saveSongSettings({
+        analyzedBPM: STATE.detectedBPM,
+        firstBeatTime: STATE.firstBeatTime
+      });
+    }
 
-    // default: target bpm = analyzed baseline
-    STATE.targetBPM = STATE.detectedBPM || 120;
-    targetBpmInput.value = STATE.targetBPM;
+    // If targetBPM wasn’t restored, default it (baseline behavior)
+    if (!cached || typeof cached.targetBPM !== 'number') {
+      STATE.targetBPM = (STATE.gridBPM && STATE.gridBPM > 0) ? STATE.gridBPM : (STATE.detectedBPM || 120);
+      targetBpmInput.value = STATE.targetBPM;
+      saveSongSettings({ targetBPM: STATE.targetBPM });
+    }
 
     updateBeatDurationFromGrid();
     recomputeTotalBeats();
@@ -366,14 +431,20 @@ function startBpmEdit() {
     if (!Number.isFinite(val) || val <= 0) {
       // clear override
       STATE.gridBPM = 0;
+      saveSongSettings({ gridBPM: 0 });
+
       STATE.targetBPM = getPlaybackBaseBPM();
       targetBpmInput.value = STATE.targetBPM;
+      saveSongSettings({ targetBPM: STATE.targetBPM });
     } else {
       // set override
       STATE.gridBPM = val;
+      saveSongSettings({ gridBPM: val });
+
       // snap target bpm to new baseline
       STATE.targetBPM = val;
       targetBpmInput.value = val;
+      saveSongSettings({ targetBPM: val });
     }
 
     updateBeatDurationFromGrid();
@@ -409,7 +480,6 @@ function startMetronome() {
 
   const now = STATE.audioContext.currentTime;
 
-  // start slightly in the future
   STATE.metronome.startTime = now + 0.05;
   STATE.metronome.nextTickTime = STATE.metronome.startTime;
   STATE.metronome.isPlaying = true;
@@ -435,7 +505,7 @@ function metronomeScheduler() {
 
   while (STATE.metronome.nextTickTime < ahead) {
     scheduleClick(STATE.metronome.nextTickTime);
-    STATE.metronome.nextTickTime += getTargetBeatDuration(); // follows TARGET BPM live
+    STATE.metronome.nextTickTime += getTargetBeatDuration();
   }
 }
 
@@ -452,7 +522,7 @@ function scheduleClick(time) {
   gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.03);
 
   osc.connect(gain);
-  gain.connect(STATE.metronome.gainNode); // volume slider controls this node
+  gain.connect(STATE.metronome.gainNode);
 
   osc.start(time);
   osc.stop(time + 0.04);
@@ -485,7 +555,6 @@ function updateQuantUI() {
   });
 }
 
-// Quantize a time to nearest grid (then nudge to next if it would be in the past)
 function getQuantizedTime(now, div) {
   const base = STATE.metronome.startTime;
   const beatDur = getTargetBeatDuration();
@@ -506,7 +575,7 @@ function initChunks() {
   recomputeTotalBeats();
   STATE.chunks = [];
 
-  const defaultLen = 1; // default is still 1 beat
+  const defaultLen = 1;
   const used = new Set();
   const maxStart = Math.max(0, STATE.totalBeats);
 
@@ -584,7 +653,7 @@ function clearPending() {
 }
 
 function stopAllPlayingAt(time) {
-  for (const [idx, src] of STATE.activeSources) {
+  for (const [, src] of STATE.activeSources) {
     try { src.stop(time); } catch (_) {}
   }
 }
@@ -615,8 +684,8 @@ function triggerPad(index, { fromKeyboard }) {
 
   const quantActive = fromKeyboard && STATE.metronome.isPlaying && STATE.quantizeDiv;
 
-  // If quantization is NOT active: original monophonic behavior (stop immediately)
   if (!quantActive) {
+    // original monophonic behavior (immediate stop + start)
     clearPending();
 
     for (const [idx, src] of STATE.activeSources) {
@@ -646,20 +715,18 @@ function triggerPad(index, { fromKeyboard }) {
     return;
   }
 
-  // Quantization IS active (keypress only):
-  // - do NOT stop current immediately
-  // - schedule stop + start at the quantized time
+  // Quantization active (keypress only): queue to next gridline
   ensureAudioContext();
   const now = STATE.audioContext.currentTime;
   const startAt = getQuantizedTime(now, STATE.quantizeDiv);
 
-  // Replace any previously queued sample (latest key wins)
+  // latest key wins
   clearPending();
 
-  // Schedule current playing sources to stop exactly at the gridline
+  // stop current at the gridline
   stopAllPlayingAt(startAt);
 
-  // Schedule new sample at the same gridline
+  // schedule next sample at gridline
   const queuedSource = schedulePlayAt(index, startAt);
   if (!queuedSource) return;
 
@@ -667,20 +734,17 @@ function triggerPad(index, { fromKeyboard }) {
   STATE.pending.index = index;
   STATE.pending.startAt = startAt;
 
-  // UI handoff at gridline: swap "active" indicator to the queued pad
+  // UI handoff at gridline
   const ms = Math.max(0, (startAt - now) * 1000);
   STATE.pending.uiTimeoutId = setTimeout(() => {
-    // Clear old active visuals & map (they should have stopped at startAt)
     for (const [idx] of STATE.activeSources) {
       padEls[idx].classList.remove('active');
     }
     STATE.activeSources.clear();
 
-    // Promote queued to active
     STATE.activeSources.set(index, queuedSource);
     padEls[index].classList.add('active');
 
-    // queued is now "active", clear pending record (but keep playback)
     STATE.pending.source = null;
     STATE.pending.index = null;
     STATE.pending.startAt = null;
@@ -806,7 +870,7 @@ function downloadChunk(index) {
 
   const a = document.createElement('a');
   a.href = url;
-  a.download = `sampel_chunk_${index + 1}.wav`;
+  a.download = `sampleo_chunk_${index + 1}.wav`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
