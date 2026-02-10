@@ -10,7 +10,10 @@
       "Bash(npm install)",
       "Bash(py:*)",
       "Bash(C:UserseducaProgrammingPersonal_ProjectssampelvenvScriptspython.exe --version)",
-      "Bash(cmd /c:*)"
+      "Bash(cmd /c:*)",
+      "Bash(\"C:/Users/educa/Programming/Personal_Projects/sampel/.venv/Scripts/python.exe\" --version)",
+      "Bash(\"C:/Users/educa/Programming/Personal_Projects/sampel/.venv/Scripts/pip.exe\" install librosa numpy soundfile)",
+      "Bash(\"C:/Users/educa/Programming/Personal_Projects/sampel/.venv/Scripts/python.exe\" -c \"import librosa; import numpy; import soundfile; print\\(''All imports OK''\\); print\\(f''librosa={librosa.__version__}, numpy={numpy.__version__}''\\)\")"
     ]
   }
 }
