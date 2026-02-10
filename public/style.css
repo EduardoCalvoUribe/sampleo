@@ -244,6 +244,119 @@ button:active {
   background: #c08020;
 }
 
+/* Sequencer */
+.sequencer-section {
+  padding: 12px;
+  background: #16213e;
+  border-radius: 6px;
+  margin-bottom: 20px;
+}
+
+.sequencer-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sequencer-controls select {
+  padding: 4px 8px;
+  background: #0f3460;
+  border: 1px solid #334;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+.sequencer-timeline {
+  position: relative;
+  height: 60px;
+  background: #0a0a1a;
+  border-radius: 4px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.seq-beat-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #334;
+  pointer-events: none;
+}
+
+.seq-bar-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #556;
+  pointer-events: none;
+}
+
+.seq-beat-label {
+  position: absolute;
+  bottom: 2px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  color: #445;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.seq-note {
+  position: absolute;
+  top: 8px;
+  height: 44px;
+  background: #e0a030;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  font-weight: bold;
+  color: #1a1a2e;
+  cursor: grab;
+  z-index: 2;
+  min-width: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.seq-note:hover {
+  filter: brightness(1.1);
+}
+
+.seq-note.dragging {
+  opacity: 0.7;
+  z-index: 10;
+  cursor: grabbing;
+}
+
+.seq-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #00d4ff;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.seq-drop-indicator {
+  position: absolute;
+  top: 8px;
+  height: 44px;
+  background: rgba(224, 160, 48, 0.25);
+  border: 1px dashed #e0a030;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 1;
+}
+
 /* Action bar */
 .action-bar {
   display: flex;

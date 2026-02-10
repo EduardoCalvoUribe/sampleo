@@ -87,6 +87,20 @@
 
     <section class="pad-grid" id="pad-grid"></section>
 
+    <section class="sequencer-section">
+      <div class="sequencer-controls">
+        <button id="seq-play" type="button" title="Play/pause sequencer">&#9654;</button>
+        <select id="seq-beats">
+          <option value="4">4 beats (1 bar)</option>
+          <option value="8" selected>8 beats (2 bars)</option>
+          <option value="16">16 beats (4 bars)</option>
+          <option value="32">32 beats (8 bars)</option>
+        </select>
+        <button id="seq-clear" type="button">Clear</button>
+      </div>
+      <div class="sequencer-timeline" id="seq-timeline"></div>
+    </section>
+
     <section class="chunk-detail hidden" id="chunk-detail">
       <div class="detail-header">
         <span id="chunk-label">Chunk 1</span>

@@ -46,6 +46,20 @@ const STATE = {
     index: null,
     startAt: null,
     uiTimeoutId: null
+  },
+
+  // ── Sequencer ──
+  sequencer: {
+    notes: [],          // [{padIndex, beat}] — beat is 0-based position on timeline
+    gridBeats: 8,       // 4, 8, 16, or 32
+    isPlaying: false,
+    startTime: 0,       // audioContext.currentTime anchor
+    nextBeatTime: 0,    // scheduler lookahead cursor
+    currentBeat: 0,     // integer beat for scheduling
+    intervalId: null,
+    animFrameId: null,
+    dragSource: null,    // padIndex being dragged onto timeline
+    dragNote: null       // existing note being repositioned
   }
 };
 
@@ -115,6 +129,12 @@ const rerandomizeBtn   = document.getElementById('rerandomize-btn');
 const offsetSlider     = document.getElementById('offset-slider');
 const offsetValue      = document.getElementById('offset-value');
 
+// Sequencer UI
+const seqPlayBtn       = document.getElementById('seq-play');
+const seqBeatsSelect   = document.getElementById('seq-beats');
+const seqClearBtn      = document.getElementById('seq-clear');
+const seqTimeline      = document.getElementById('seq-timeline');
+
 // ── Build pad grid ──────────────────────────────────────────────────
 const padEls = [];
 const allKeys = [...KEYS_ROW1, ...KEYS_ROW2];
@@ -122,7 +142,7 @@ for (let i = 0; i < 16; i++) {
   const pad = document.createElement('div');
   pad.className = 'pad';
   pad.innerHTML = `<span class="pad-key">${allKeys[i]}</span><span class="pad-num">${i + 1}</span>`;
-  pad.addEventListener('mousedown', () => triggerPad(i, { fromKeyboard: false }));
+  pad.addEventListener('pointerdown', (e) => padPointerDown(i, e));
   padGrid.appendChild(pad);
   padEls.push(pad);
 }
@@ -160,6 +180,7 @@ lengthSlider.addEventListener('input', () => {
 
   lengthValue.textContent = formatBeats(opt);
   drawWaveform();
+  renderTimeline();
 });
 
 downloadChunkBtn.addEventListener('click', () => downloadChunk(STATE.selectedChunkIndex));
@@ -294,6 +315,7 @@ async function loadRandomSong() {
 
     initChunks();          // unique whole-beat starts
     selectChunk(0);
+    renderTimeline();      // update timeline block widths
   } catch (err) {
     songName.textContent = 'Error: ' + err.message;
     console.error(err);
@@ -601,6 +623,7 @@ function initChunks() {
 function rerandomize() {
   if (!STATE.originalBuffer) return;
   initChunks();
+  renderTimeline();
   selectChunk(STATE.selectedChunkIndex);
 }
 
@@ -1040,3 +1063,377 @@ function arrayMax(arr) {
   }
   return m;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// ── SEQUENCER ────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+// ── Pad drag → timeline logic ────────────────────────────────────────
+const PAD_DRAG_THRESHOLD = 8; // px before drag starts
+let _padDragState = null;     // {padIndex, startX, startY, isDragging, ghost}
+
+function padPointerDown(padIndex, e) {
+  if (e.button !== 0) return;
+  _padDragState = {
+    padIndex,
+    startX: e.clientX,
+    startY: e.clientY,
+    isDragging: false,
+    ghost: null
+  };
+  // Don't trigger pad yet — wait for pointerup (click) vs drag
+}
+
+document.addEventListener('pointermove', (e) => {
+  if (!_padDragState) return;
+
+  const dx = e.clientX - _padDragState.startX;
+  const dy = e.clientY - _padDragState.startY;
+
+  if (!_padDragState.isDragging) {
+    if (Math.sqrt(dx * dx + dy * dy) < PAD_DRAG_THRESHOLD) return;
+    _padDragState.isDragging = true;
+    STATE.sequencer.dragSource = _padDragState.padIndex;
+
+    // Create ghost element
+    const ghost = document.createElement('div');
+    ghost.className = 'seq-note';
+    ghost.style.position = 'fixed';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.zIndex = '9999';
+    ghost.style.width = '50px';
+    ghost.style.height = '44px';
+    ghost.style.opacity = '0.8';
+    ghost.textContent = allKeys[_padDragState.padIndex];
+    document.body.appendChild(ghost);
+    _padDragState.ghost = ghost;
+  }
+
+  if (_padDragState.ghost) {
+    _padDragState.ghost.style.left = (e.clientX - 25) + 'px';
+    _padDragState.ghost.style.top = (e.clientY - 22) + 'px';
+  }
+
+  // Show drop indicator on timeline
+  updateDropIndicator(e);
+});
+
+document.addEventListener('pointerup', (e) => {
+  if (!_padDragState) return;
+
+  const state = _padDragState;
+  _padDragState = null;
+
+  if (state.ghost) {
+    state.ghost.remove();
+  }
+  removeDropIndicator();
+
+  if (!state.isDragging) {
+    // It was a click, not a drag — trigger the pad
+    triggerPad(state.padIndex, { fromKeyboard: false });
+    STATE.sequencer.dragSource = null;
+    return;
+  }
+
+  // Was a drag — check if dropped on timeline
+  if (!seqTimeline) { STATE.sequencer.dragSource = null; return; }
+
+  const rect = seqTimeline.getBoundingClientRect();
+  if (e.clientX >= rect.left && e.clientX <= rect.right &&
+      e.clientY >= rect.top && e.clientY <= rect.bottom) {
+    const relX = (e.clientX - rect.left) / rect.width;
+    const beat = Math.round(relX * STATE.sequencer.gridBeats);
+    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+
+    STATE.sequencer.notes.push({ padIndex: state.padIndex, beat: snapped });
+    renderTimeline();
+  }
+
+  STATE.sequencer.dragSource = null;
+});
+
+// ── Drop indicator on timeline during pad drag ──────────────────────
+function updateDropIndicator(e) {
+  removeDropIndicator();
+  if (!seqTimeline || !_padDragState || !_padDragState.isDragging) return;
+
+  const rect = seqTimeline.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right ||
+      e.clientY < rect.top || e.clientY > rect.bottom) return;
+
+  const relX = (e.clientX - rect.left) / rect.width;
+  const beat = Math.round(relX * STATE.sequencer.gridBeats);
+  const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+
+  const chunk = STATE.chunks[_padDragState.padIndex];
+  const lengthBeats = chunk ? chunk.lengthInBeats : 1;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'seq-drop-indicator';
+  indicator.style.left = (snapped / STATE.sequencer.gridBeats * 100) + '%';
+  indicator.style.width = (lengthBeats / STATE.sequencer.gridBeats * 100) + '%';
+  indicator.id = 'seq-drop-ind';
+  seqTimeline.appendChild(indicator);
+}
+
+function removeDropIndicator() {
+  const existing = document.getElementById('seq-drop-ind');
+  if (existing) existing.remove();
+}
+
+// ── Timeline rendering ──────────────────────────────────────────────
+function renderTimeline() {
+  if (!seqTimeline) return;
+
+  // Preserve playhead if playing
+  const wasPlaying = STATE.sequencer.isPlaying;
+
+  seqTimeline.innerHTML = '';
+  const gridBeats = STATE.sequencer.gridBeats;
+
+  // Beat lines + labels
+  for (let b = 0; b <= gridBeats; b++) {
+    const pct = (b / gridBeats * 100) + '%';
+
+    const line = document.createElement('div');
+    line.className = (b % 4 === 0) ? 'seq-bar-line' : 'seq-beat-line';
+    line.style.left = pct;
+    seqTimeline.appendChild(line);
+
+    if (b < gridBeats) {
+      const label = document.createElement('div');
+      label.className = 'seq-beat-label';
+      label.style.left = ((b + 0.5) / gridBeats * 100) + '%';
+      label.textContent = b + 1;
+      seqTimeline.appendChild(label);
+    }
+  }
+
+  // Note blocks
+  STATE.sequencer.notes.forEach((note, noteIdx) => {
+    const chunk = STATE.chunks[note.padIndex];
+    if (!chunk) return;
+
+    const block = document.createElement('div');
+    block.className = 'seq-note';
+    block.style.left = (note.beat / gridBeats * 100) + '%';
+    block.style.width = (chunk.lengthInBeats / gridBeats * 100) + '%';
+    block.textContent = allKeys[note.padIndex];
+    block.dataset.noteIdx = noteIdx;
+
+    // Drag to reposition
+    block.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      startNoteDrag(noteIdx, e);
+    });
+
+    // Right-click to remove
+    block.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      STATE.sequencer.notes.splice(noteIdx, 1);
+      renderTimeline();
+    });
+
+    seqTimeline.appendChild(block);
+  });
+
+  // Playhead
+  const playhead = document.createElement('div');
+  playhead.className = 'seq-playhead';
+  playhead.id = 'seq-playhead';
+  playhead.style.left = '0%';
+  playhead.style.display = wasPlaying ? 'block' : 'none';
+  seqTimeline.appendChild(playhead);
+}
+
+// ── Note block drag (reposition within timeline) ────────────────────
+let _noteDragState = null;
+
+function startNoteDrag(noteIdx, e) {
+  const note = STATE.sequencer.notes[noteIdx];
+  if (!note) return;
+
+  const rect = seqTimeline.getBoundingClientRect();
+  const blockEl = e.target.closest('.seq-note');
+
+  _noteDragState = {
+    noteIdx,
+    originalBeat: note.beat,
+    startX: e.clientX,
+    timelineRect: rect,
+    blockEl
+  };
+
+  if (blockEl) blockEl.classList.add('dragging');
+
+  const onMove = (ev) => {
+    if (!_noteDragState) return;
+    const relX = (ev.clientX - _noteDragState.timelineRect.left) / _noteDragState.timelineRect.width;
+    const beat = Math.round(relX * STATE.sequencer.gridBeats);
+    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+
+    STATE.sequencer.notes[_noteDragState.noteIdx].beat = snapped;
+    if (_noteDragState.blockEl) {
+      _noteDragState.blockEl.style.left = (snapped / STATE.sequencer.gridBeats * 100) + '%';
+    }
+  };
+
+  const onUp = () => {
+    if (_noteDragState && _noteDragState.blockEl) {
+      _noteDragState.blockEl.classList.remove('dragging');
+    }
+    _noteDragState = null;
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    renderTimeline();
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+// ── Sequencer playback engine ───────────────────────────────────────
+function startSequencer() {
+  ensureAudioContext();
+  if (STATE.audioContext.state === 'suspended') STATE.audioContext.resume();
+
+  const seq = STATE.sequencer;
+  const now = STATE.audioContext.currentTime;
+
+  seq.startTime = now + 0.05;
+  seq.nextBeatTime = seq.startTime;
+  seq.currentBeat = 0;
+  seq.isPlaying = true;
+
+  seq.intervalId = setInterval(sequencerScheduler, 25);
+  seq.animFrameId = requestAnimationFrame(updatePlayhead);
+
+  const ph = document.getElementById('seq-playhead');
+  if (ph) ph.style.display = 'block';
+
+  updateSeqPlayBtn();
+}
+
+function stopSequencer() {
+  const seq = STATE.sequencer;
+  seq.isPlaying = false;
+
+  if (seq.intervalId) {
+    clearInterval(seq.intervalId);
+    seq.intervalId = null;
+  }
+  if (seq.animFrameId) {
+    cancelAnimationFrame(seq.animFrameId);
+    seq.animFrameId = null;
+  }
+
+  // Stop any sequencer-triggered sounds
+  for (const [idx, src] of STATE.activeSources) {
+    try { src.stop(); } catch (_) {}
+    padEls[idx].classList.remove('active');
+  }
+  STATE.activeSources.clear();
+
+  const ph = document.getElementById('seq-playhead');
+  if (ph) { ph.style.display = 'none'; ph.style.left = '0%'; }
+
+  updateSeqPlayBtn();
+}
+
+function sequencerScheduler() {
+  const seq = STATE.sequencer;
+  if (!seq.isPlaying || !STATE.audioContext) return;
+
+  const now = STATE.audioContext.currentTime;
+  const ahead = now + 0.12;
+
+  while (seq.nextBeatTime < ahead) {
+    const beat = seq.currentBeat % seq.gridBeats;
+
+    // Find notes at this beat
+    for (const note of seq.notes) {
+      if (note.beat === beat) {
+        // Monophonic: stop all current at this time
+        stopAllPlayingAt(seq.nextBeatTime);
+
+        const src = schedulePlayAt(note.padIndex, seq.nextBeatTime);
+        if (src) {
+          // Update active sources for UI
+          const padIdx = note.padIndex;
+          STATE.activeSources.set(padIdx, src);
+
+          // Schedule UI highlight
+          const delayMs = Math.max(0, (seq.nextBeatTime - now) * 1000);
+          setTimeout(() => {
+            padEls.forEach(p => p.classList.remove('active'));
+            padEls[padIdx].classList.add('active');
+          }, delayMs);
+        }
+      }
+    }
+
+    seq.nextBeatTime += getTargetBeatDuration();
+    seq.currentBeat++;
+  }
+}
+
+function updatePlayhead() {
+  const seq = STATE.sequencer;
+  if (!seq.isPlaying) return;
+
+  const now = STATE.audioContext.currentTime;
+  const elapsed = now - seq.startTime;
+  const totalDuration = seq.gridBeats * getTargetBeatDuration();
+  const position = (elapsed % totalDuration) / totalDuration;
+
+  const ph = document.getElementById('seq-playhead');
+  if (ph) ph.style.left = (position * 100) + '%';
+
+  seq.animFrameId = requestAnimationFrame(updatePlayhead);
+}
+
+function updateSeqPlayBtn() {
+  if (!seqPlayBtn) return;
+  seqPlayBtn.innerHTML = STATE.sequencer.isPlaying ? '&#9646;&#9646;' : '&#9654;';
+  seqPlayBtn.title = STATE.sequencer.isPlaying ? 'Pause sequencer' : 'Play sequencer';
+}
+
+// ── Sequencer UI wiring ─────────────────────────────────────────────
+if (seqPlayBtn) {
+  seqPlayBtn.addEventListener('click', () => {
+    if (STATE.sequencer.isPlaying) stopSequencer();
+    else startSequencer();
+  });
+}
+
+if (seqBeatsSelect) {
+  seqBeatsSelect.addEventListener('change', () => {
+    const val = parseInt(seqBeatsSelect.value, 10);
+    STATE.sequencer.gridBeats = val;
+
+    // Remove notes outside the new range
+    STATE.sequencer.notes = STATE.sequencer.notes.filter(n => n.beat < val);
+
+    // Restart if playing
+    if (STATE.sequencer.isPlaying) {
+      stopSequencer();
+      renderTimeline();
+      startSequencer();
+    } else {
+      renderTimeline();
+    }
+  });
+}
+
+if (seqClearBtn) {
+  seqClearBtn.addEventListener('click', () => {
+    STATE.sequencer.notes = [];
+    renderTimeline();
+  });
+}
+
+// Initial render
+renderTimeline();
+updateSeqPlayBtn();
