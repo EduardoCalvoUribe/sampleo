@@ -22,6 +22,9 @@ Desktop.ini
 .vscode/
 .idea/
 
+# BPM cache
+bpm_cache/
+
 # Environment variables
 .env
 .claude

@@ -278,6 +278,15 @@ button:active {
   user-select: none;
 }
 
+.seq-quarter-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #223;
+  pointer-events: none;
+}
+
 .seq-beat-line {
   position: absolute;
   top: 0;

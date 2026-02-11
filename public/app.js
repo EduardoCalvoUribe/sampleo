@@ -1143,8 +1143,8 @@ document.addEventListener('pointerup', (e) => {
   if (e.clientX >= rect.left && e.clientX <= rect.right &&
       e.clientY >= rect.top && e.clientY <= rect.bottom) {
     const relX = (e.clientX - rect.left) / rect.width;
-    const beat = Math.round(relX * STATE.sequencer.gridBeats);
-    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+    const beat = Math.round(relX * STATE.sequencer.gridBeats * 4) / 4;
+    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 0.25, beat));
 
     STATE.sequencer.notes.push({ padIndex: state.padIndex, beat: snapped });
     renderTimeline();
@@ -1163,8 +1163,8 @@ function updateDropIndicator(e) {
       e.clientY < rect.top || e.clientY > rect.bottom) return;
 
   const relX = (e.clientX - rect.left) / rect.width;
-  const beat = Math.round(relX * STATE.sequencer.gridBeats);
-  const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+  const beat = Math.round(relX * STATE.sequencer.gridBeats * 4) / 4;
+  const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 0.25, beat));
 
   const chunk = STATE.chunks[_padDragState.padIndex];
   const lengthBeats = chunk ? chunk.lengthInBeats : 1;
@@ -1192,20 +1192,28 @@ function renderTimeline() {
   seqTimeline.innerHTML = '';
   const gridBeats = STATE.sequencer.gridBeats;
 
-  // Beat lines + labels
-  for (let b = 0; b <= gridBeats; b++) {
-    const pct = (b / gridBeats * 100) + '%';
+  // Beat lines, quarter-beat subdivisions + labels
+  const totalQuarters = gridBeats * 4;
+  for (let q = 0; q <= totalQuarters; q++) {
+    const beatPos = q / 4;
+    const pct = (beatPos / gridBeats * 100) + '%';
 
     const line = document.createElement('div');
-    line.className = (b % 4 === 0) ? 'seq-bar-line' : 'seq-beat-line';
+    if (q % 4 === 0) {
+      // Whole beat
+      line.className = (q % 16 === 0) ? 'seq-bar-line' : 'seq-beat-line';
+    } else {
+      line.className = 'seq-quarter-line';
+    }
     line.style.left = pct;
     seqTimeline.appendChild(line);
 
-    if (b < gridBeats) {
+    // Beat number labels on whole beats only
+    if (q % 4 === 0 && beatPos < gridBeats) {
       const label = document.createElement('div');
       label.className = 'seq-beat-label';
-      label.style.left = ((b + 0.5) / gridBeats * 100) + '%';
-      label.textContent = b + 1;
+      label.style.left = ((beatPos + 0.5) / gridBeats * 100) + '%';
+      label.textContent = beatPos + 1;
       seqTimeline.appendChild(label);
     }
   }
@@ -1262,17 +1270,26 @@ function startNoteDrag(noteIdx, e) {
     noteIdx,
     originalBeat: note.beat,
     startX: e.clientX,
+    startY: e.clientY,
+    isDragging: false,
     timelineRect: rect,
     blockEl
   };
 
-  if (blockEl) blockEl.classList.add('dragging');
-
   const onMove = (ev) => {
     if (!_noteDragState) return;
+
+    if (!_noteDragState.isDragging) {
+      const dx = ev.clientX - _noteDragState.startX;
+      const dy = ev.clientY - _noteDragState.startY;
+      if (Math.sqrt(dx * dx + dy * dy) < PAD_DRAG_THRESHOLD) return;
+      _noteDragState.isDragging = true;
+      if (_noteDragState.blockEl) _noteDragState.blockEl.classList.add('dragging');
+    }
+
     const relX = (ev.clientX - _noteDragState.timelineRect.left) / _noteDragState.timelineRect.width;
-    const beat = Math.round(relX * STATE.sequencer.gridBeats);
-    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 1, beat));
+    const beat = Math.round(relX * STATE.sequencer.gridBeats * 4) / 4;
+    const snapped = Math.max(0, Math.min(STATE.sequencer.gridBeats - 0.25, beat));
 
     STATE.sequencer.notes[_noteDragState.noteIdx].beat = snapped;
     if (_noteDragState.blockEl) {
@@ -1281,9 +1298,17 @@ function startNoteDrag(noteIdx, e) {
   };
 
   const onUp = () => {
+    const wasDragging = _noteDragState && _noteDragState.isDragging;
+
     if (_noteDragState && _noteDragState.blockEl) {
       _noteDragState.blockEl.classList.remove('dragging');
     }
+
+    // Click (no drag) — select the corresponding pad/chunk
+    if (!wasDragging && note) {
+      selectChunk(note.padIndex);
+    }
+
     _noteDragState = null;
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
@@ -1349,12 +1374,16 @@ function sequencerScheduler() {
   const now = STATE.audioContext.currentTime;
   const ahead = now + 0.12;
 
-  while (seq.nextBeatTime < ahead) {
-    const beat = seq.currentBeat % seq.gridBeats;
+  const quarterBeatDur = getTargetBeatDuration() / 4;
 
-    // Find notes at this beat
+  while (seq.nextBeatTime < ahead) {
+    // currentBeat counts quarter-beats; convert to beat position
+    const beat = (seq.currentBeat % (seq.gridBeats * 4)) / 4;
+
+    // Find notes at this beat (compare as quarter-beat indices to avoid float issues)
+    const qIdx = seq.currentBeat % (seq.gridBeats * 4);
     for (const note of seq.notes) {
-      if (note.beat === beat) {
+      if (Math.round(note.beat * 4) === qIdx) {
         // Monophonic: stop all current at this time
         stopAllPlayingAt(seq.nextBeatTime);
 
@@ -1374,7 +1403,7 @@ function sequencerScheduler() {
       }
     }
 
-    seq.nextBeatTime += getTargetBeatDuration();
+    seq.nextBeatTime += quarterBeatDur;
     seq.currentBeat++;
   }
 }
